@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "rspec_time_guard"
+require "timecop"
 
 RSpec.describe RspecTimeGuard do
   let(:test_rspec_config) { RSpec::Core::Configuration.new }
@@ -72,7 +73,7 @@ RSpec.describe RspecTimeGuard do
 
       allow(ObjectSpace).to receive(:_id2ref).and_return(test_thread)
       test_info = monitor.instance_variable_get(:@active_tests)[example.object_id]
-      test_info[:start_time] = Time.now - time_limit_seconds - 0.1 if test_info
+      test_info[:start_time] = Process.clock_gettime(Process::CLOCK_MONOTONIC) - time_limit_seconds - 0.1 if test_info
 
       # Run the test
       begin
@@ -84,7 +85,7 @@ RSpec.describe RspecTimeGuard do
         if continue_on_timeout
           # Ensure the test appears to have timed out (same backdating we did earlier)
           test_info = monitor.instance_variable_get(:@active_tests)[example.object_id]
-          test_info[:start_time] = Time.now - time_limit_seconds * 2 if test_info
+          test_info[:start_time] = Process.clock_gettime(Process::CLOCK_MONOTONIC) - time_limit_seconds * 2 if test_info
 
           # Now trigger the timeout check to generate the warning
           monitor.send(:check_for_timeouts)
@@ -107,6 +108,24 @@ RSpec.describe RspecTimeGuard do
 
       it "sets example.exception when example exceeds time limit" do
         exception = run_with_time_guard(0.1) { sleep 0.01 } # Short sleep, we simulate timeout
+        expect(exception).to be_a(RspecTimeGuard::TimeLimitExceededError)
+      end
+    end
+
+    context "with Timecop freezing Time.now" do
+      around { |example| Timecop.freeze { example.run } }
+
+      it "still detects a timeout (monotonic clock is unaffected by Timecop)" do
+        exception = run_with_time_guard(0.1) { sleep 0.01 }
+        expect(exception).to be_a(RspecTimeGuard::TimeLimitExceededError)
+      end
+    end
+
+    context "with Timecop frozen at a point in the past" do
+      around { |example| Timecop.freeze(Time.now - 365 * 24 * 3600) { example.run } }
+
+      it "still detects a timeout regardless of what Time.now reports" do
+        exception = run_with_time_guard(0.1) { sleep 0.01 }
         expect(exception).to be_a(RspecTimeGuard::TimeLimitExceededError)
       end
     end
@@ -214,7 +233,7 @@ RSpec.describe RspecTimeGuard do
         expect(test_info[:timeout]).to eq(0.5)
         expect(test_info[:thread_id]).to eq(thread.object_id)
         expect(test_info[:warned]).to eq(false)
-        expect(test_info[:start_time]).to be_a(Time)
+        expect(test_info[:start_time]).to be_a(Float)
       end
 
       it "starts a monitor thread if none is running" do
